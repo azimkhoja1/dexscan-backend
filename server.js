@@ -6,30 +6,35 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Root route test
+// ✅ Root route
 app.get("/", (req, res) => {
-  res.send("DexScan backend is working ✅");
+  res.send("DexScan backend is live ✅");
 });
 
-// ✅ Proxy route to bypass region restrictions
-app.get("/proxy", async (req, res) => {
+// ✅ Binance price fetch using AllOrigins proxy (bypasses regional blocks)
+app.get("/price", async (req, res) => {
   try {
-    const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).json({ error: "Missing URL param" });
-    const response = await axios.get(targetUrl);
-    res.json(response.data);
+    const { symbol } = req.query; // e.g. BTCUSDT
+    if (!symbol) return res.status(400).json({ error: "Missing symbol" });
+
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(
+      `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`
+    )}`;
+
+    const response = await axios.get(proxyUrl);
+    const parsedData = JSON.parse(response.data.contents);
+
+    res.json(parsedData);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// ✅ Simple Binance price check test
-app.get("/price", async (req, res) => {
+// ✅ Proxy route (for other APIs)
+app.get("/proxy", async (req, res) => {
   try {
-    const { symbol } = req.query; // e.g. BTCUSDT
-    const response = await axios.get(
-      `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`
-    );
+    const url = req.query.url;
+    const response = await axios.get(url);
     res.json(response.data);
   } catch (err) {
     res.status(500).json({ error: err.message });
