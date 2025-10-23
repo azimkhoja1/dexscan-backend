@@ -1,4 +1,4 @@
-// server.js (final Bitget-enabled backend with caching & retry)
+// server.js (DexScan backend - Bitget + CoinGecko + resilient cache)
 import express from "express";
 import axios from "axios";
 import cors from "cors";
@@ -20,23 +20,18 @@ async function readJsonSafe(f,d=[]) { try { return await fs.readJson(f); } catch
 async function writeJsonSafe(f,v){ await fs.writeJson(f, v, { spaces: 2 }); }
 async function appendLog(line){ try { await fs.appendFile(LOG_FILE, new Date().toISOString() + " " + line + "\n"); } catch(e) {} }
 
-// ENV
+// configuration from environment
 const PERCENT_PER_TRADE = Number(process.env.PERCENT_PER_TRADE || 2);
 const TP_PERCENT = Number(process.env.TP_PERCENT || 10);
 const BITGET_DEMO = (process.env.BITGET_DEMO === "1");
 
-// in-memory cache for coin gecko
-let _cg_top_cache = { ts: 0, data: null };
-const CG_TOP_TTL_MS = 30 * 1000;
-const CG_TOP_REFRESH_INTERVAL = 20 * 1000;
-
-// fetchWithRetry (handles 429 backoff)
+// ---------------------- Fetch with retry (generic) ----------------------
 async function fetchWithRetry(url, opts = {}, maxRetries = 4, baseDelay = 600) {
   let attempt = 0;
   while (true) {
     try {
       const res = await axios.get(url, { ...opts, timeout: 20000 });
-      if (res.status === 429) throw { is429:true, response: res };
+      if (res.status === 429) throw { is429: true, response: res };
       return res;
     } catch (err) {
       attempt++;
@@ -50,41 +45,56 @@ async function fetchWithRetry(url, opts = {}, maxRetries = 4, baseDelay = 600) {
   }
 }
 
-// fetch and cache top coins from CoinGecko
-async function fetchTopCoinGecko(limit = 200) {
+// ---------------------- CoinGecko cache (resilient) ----------------------
+let _cg_top_cache = { ts: 0, data: null };
+const CG_TOP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CG_TOP_REFRESH_INTERVAL = 4 * 60 * 1000; // 4 minutes
+const CG_FETCH_LIMIT = 50;
+
+async function fetchTopCoinGecko(limit = CG_FETCH_LIMIT) {
   const now = Date.now();
   if (_cg_top_cache.data && (now - _cg_top_cache.ts) < CG_TOP_TTL_MS) return _cg_top_cache.data;
   const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${limit}&page=1&sparkline=false`;
-  const res = await fetchWithRetry(url, {}, 4, 600);
-  _cg_top_cache = { ts: Date.now(), data: res.data };
-  return res.data;
+  try {
+    const res = await fetchWithRetry(url, {}, 4, 800);
+    _cg_top_cache = { ts: Date.now(), data: res.data };
+    return res.data;
+  } catch (err) {
+    console.warn("CoinGecko fetch failed:", err.response?.status || err.message || String(err));
+    if (_cg_top_cache.data) {
+      console.warn("Returning stale CoinGecko cache (age ms):", Date.now() - _cg_top_cache.ts);
+      return _cg_top_cache.data;
+    }
+    console.error("No CoinGecko cache available and fetch failed — returning empty array.");
+    return [];
+  }
 }
 async function startCoinGeckoBackgroundRefresh(){
-  try { await fetchTopCoinGecko(200).catch(()=>{}); } catch(e){}
-  setInterval(async ()=>{ try{ await fetchTopCoinGecko(200);}catch(e){console.warn("CG refresh err", e.message);} }, CG_TOP_REFRESH_INTERVAL);
+  try { await fetchTopCoinGecko(CG_FETCH_LIMIT).catch(()=>{}); } catch(e){}
+  setInterval(async ()=>{ try{ await fetchTopCoinGecko(CG_FETCH_LIMIT);}catch(e){console.warn("CG refresh err", e.message);} }, CG_TOP_REFRESH_INTERVAL);
 }
 startCoinGeckoBackgroundRefresh();
 
-// helper last
-function last(arr){ return arr[arr.length-1]; }
+// ---------------------- Helpers for indicators ----------------------
+function last(arr){ return arr[arr.length - 1]; }
 
-// fetch klines from Binance mirror (used for indicators)
 async function fetchKlines(symbol, interval="1h", limit=200) {
   const url = `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-  const r = await fetchWithRetry(url, {}, 3, 500);
-  return r.data;
+  const res = await fetchWithRetry(url, {}, 3, 500);
+  return res.data;
 }
 
-// analyze single symbol
 async function analyzeSymbol(symbol) {
   try {
     const k1h = await fetchKlines(symbol, "1h", 200);
     const k4h = await fetchKlines(symbol, "4h", 100);
+
     const closes1h = k1h.map(k => parseFloat(k[4]));
     const highs1h = k1h.map(k => parseFloat(k[2]));
     const lows1h = k1h.map(k => parseFloat(k[3]));
     const vols1h = k1h.map(k => parseFloat(k[5]));
     const closes4h = k4h.map(k => parseFloat(k[4]));
+
     if (closes1h.length < 50 || closes4h.length < 20) throw new Error("not enough candles");
 
     const ema8_1h = last(EMA.calculate({ period:8, values: closes1h }));
@@ -92,6 +102,7 @@ async function analyzeSymbol(symbol) {
     const rsi1h = last(RSI.calculate({ period:14, values: closes1h }));
     const macd1h = last(MACD.calculate({ values: closes1h, fastPeriod:12, slowPeriod:26, signalPeriod:9 }));
     const atr1h = last(ATR.calculate({ period:14, high: highs1h, low: lows1h, close: closes1h }));
+
     const ema8_4h = last(EMA.calculate({ period:8, values: closes4h }));
     const ema21_4h = last(EMA.calculate({ period:21, values: closes4h }));
     const macd4h = last(MACD.calculate({ values: closes4h, fastPeriod:12, slowPeriod:26, signalPeriod:9 }));
@@ -113,9 +124,10 @@ async function analyzeSymbol(symbol) {
   } catch (e) { return { ok:false, symbol, error: String(e) }; }
 }
 
-// Routes
+// ---------------------- Routes ----------------------
 app.get("/", (_req,res) => res.send("DexScan (Bitget) backend ✅"));
 
+// Top10 (uses CoinGecko cached list)
 app.get("/api/top10", async (_req,res) => {
   try {
     const coins = await fetchTopCoinGecko(50);
@@ -128,6 +140,7 @@ app.get("/api/top10", async (_req,res) => {
   }
 });
 
+// Run full scan (heavy)
 app.post("/api/scan/run", async (_req,res) => {
   try {
     await appendLog("Scan run started");
@@ -145,11 +158,12 @@ app.post("/api/scan/run", async (_req,res) => {
     await writeJsonSafe(SCANS_FILE, topN);
     await appendLog(`Scan finished: ${topN.length}`);
     res.json(topN);
-  } catch (e) { await appendLog("scan error: "+ (e.message||e)); res.status(500).json({ error: String(e.message||e) }); }
+  } catch (e) { await appendLog("scan error: "+(e.message||e)); res.status(500).json({ error: String(e.message || e) }); }
 });
 
 app.get("/api/scan/results", async (_req,res) => { const scans = await readJsonSafe(SCANS_FILE, []); res.json(scans); });
 
+// Bitget balance
 app.get("/api/bitget/balance", async (_req,res) => {
   try {
     const bal = await getSpotBalancesSimple();
@@ -158,6 +172,7 @@ app.get("/api/bitget/balance", async (_req,res) => {
   } catch (e) { res.status(500).json({ error: e.message || String(e) }); }
 });
 
+// Place manual order
 app.post("/api/bitget/order", async (req,res) => {
   try {
     const { symbol, side, percent } = req.body;
@@ -167,24 +182,27 @@ app.post("/api/bitget/order", async (req,res) => {
     const balances = balResp.data || {};
     const usdtBal = Number(balances["USDT"] || balances["usdt"] || 0);
     if (!usdtBal || usdtBal <= 0) return res.status(400).json({ error: "Insufficient USDT" });
+
     const pct = Number(percent || PERCENT_PER_TRADE);
     const sizeUsd = +(usdtBal * (pct/100));
-    // get price: try Bitget ticker then fallback to coin gecko cached price
+
+    // price: try bitget ticker then fallback to CoinGecko cached
     let price = null;
-    const t = await fetchSymbolTicker(symbol);
-    if (t.ok && t.data) {
-      price = Number(t.data?.data?.last || t.data?.last || t.data?.price || 0);
-    }
+    try {
+      const t = await fetchSymbolTicker(symbol);
+      if (t.ok && t.data) price = Number(t.data?.data?.last || t.data?.last || t.data?.price || 0);
+    } catch(e){}
     if (!price) {
-      // fallback to CoinGecko cached top
       const cg = await fetchTopCoinGecko(200);
       const id = (cg.find(c => ((c.symbol||"").toUpperCase()+"USDT") === symbol) || {}).id;
       price = id ? Number((cg.find(x=>x.id===id)||{}).current_price || 0) : 0;
     }
     if (!price || price <= 0) return res.status(500).json({ error: "price unavailable for "+symbol });
+
     const qty = +(sizeUsd / price).toFixed(8);
     const orderResp = await placeSpotOrder(symbol, side.toLowerCase(), qty, "market", null);
     if (!orderResp.ok) return res.status(500).json({ error: orderResp.error });
+
     const trades = await readJsonSafe(TRADES_FILE, []);
     const trade = { id: "live_"+Date.now(), symbol, side, qty, price, placed_at: new Date().toISOString(), demo: BITGET_DEMO, orderResult: orderResp.data };
     trades.push(trade);
@@ -208,7 +226,7 @@ app.post("/api/auto/set", async (req,res) => {
 });
 app.get("/api/auto/status", async (_req,res) => { const cfg = await readJsonSafe("./data/runtime_cfg.json", { auto:false }); res.json(cfg); });
 
-// worker (light) - logs signals when auto is enabled (does not auto-place by default)
+// Worker: checks autosignals & logs (does NOT auto-execute by default)
 let workerRunning = false;
 async function workerLoop() {
   try {
@@ -223,7 +241,7 @@ async function workerLoop() {
           const r = await analyzeSymbol(s);
           if (r.ok && r.score >= 7) {
             await appendLog(`Auto-signal: ${s} score ${r.score}`);
-            // Optional: placeSpotOrder(...) here to auto-execute (not enabled by default)
+            // optional: call placeSpotOrder(...) here when you explicitly want auto-exec
           }
         } catch(e){}
       }
@@ -233,5 +251,6 @@ async function workerLoop() {
 }
 setInterval(workerLoop, 60 * 1000);
 
+// Start server
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`DexScan backend (Bitget) running on ${PORT}`));
