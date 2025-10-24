@@ -1,8 +1,9 @@
-// DexScan PRO Stage 3 Backend
+// DexScan PRO Final Stage 3 — stable build
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
+
 dotenv.config();
 
 const app = express();
@@ -10,23 +11,22 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
-const CMC_KEY = process.env.CMC_KEY || "";
 const DEMO_MODE = process.env.BITGET_DEMO === "1";
+let modeDemo = DEMO_MODE;
 let autoTrade = false;
 let trades = [];
 let balance = { USDT: 10000 };
 let lastScan = [];
-let modeDemo = DEMO_MODE;
+let headerPrices = { btc: null, eth: null, bnb: null };
 
-// -------- util helpers --------
-async function fetchJSON(url, opts = {}) {
-  const r = await fetch(url, opts);
-  if (!r.ok) throw new Error("bad response");
+// ---------- Helper ----------
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("Request failed: " + r.status);
   return await r.json();
 }
 
-// -------- live price updater --------
-let headerPrices = { btc: null, eth: null, bnb: null };
+// ---------- Live BTC/ETH/BNB updater ----------
 async function updateHeaderPrices() {
   try {
     const r = await fetchJSON(
@@ -38,13 +38,13 @@ async function updateHeaderPrices() {
       bnb: r.binancecoin.usd.toFixed(2),
     };
   } catch (e) {
-    console.log("coingecko fail");
+    console.log("⚠️ Header price update failed:", e.message);
   }
 }
 setInterval(updateHeaderPrices, 5000);
 updateHeaderPrices();
 
-// -------- fake coin scan --------
+// ---------- Coin Scanner ----------
 async function runScan() {
   const symbols = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","DOGEUSDT","XRPUSDT"];
   lastScan = symbols.map((s) => {
@@ -64,10 +64,11 @@ async function runScan() {
       score,
     };
   });
+  console.log("✅ Scan complete:", lastScan.length, "coins");
   return lastScan;
 }
 
-// -------- trades & pnl simulation --------
+// ---------- PnL Simulation ----------
 function simulatePrices() {
   trades.forEach((t) => {
     if (t.status === "OPEN") {
@@ -78,8 +79,8 @@ function simulatePrices() {
 }
 setInterval(simulatePrices, 5000);
 
-// -------- API endpoints --------
-app.get("/", (req, res) => res.send("DexScan PRO Backend (Stage3) ✅"));
+// ---------- Routes ----------
+app.get("/", (req, res) => res.send("✅ DexScan PRO Backend (Stage 3 Final) running"));
 
 app.get("/api/header", (req, res) => res.json(headerPrices));
 
@@ -93,9 +94,7 @@ app.post("/api/scan/run", async (req, res) => {
   res.json({ ok: true, count: lastScan.length });
 });
 
-app.get("/api/trades", (req, res) => {
-  res.json(trades);
-});
+app.get("/api/trades", (req, res) => res.json(trades));
 
 app.post("/api/trade/buy", (req, res) => {
   const sym = req.body.symbol;
@@ -109,7 +108,7 @@ app.post("/api/trade/buy", (req, res) => {
     latest_price: coin.entry,
     status: "OPEN",
   });
-  balance.USDT -= 100; // mock trade cost
+  balance.USDT -= 100;
   res.json({ ok: true });
 });
 
@@ -125,17 +124,19 @@ app.post("/api/trade/sell", (req, res) => {
 
 app.post("/api/auto", (req, res) => {
   autoTrade = !!req.body.enabled;
+  console.log("⚙️ AutoTrade:", autoTrade);
   res.json({ ok: true, autoTrade });
 });
 
 app.post("/api/mode", (req, res) => {
   modeDemo = !!req.body.demo;
+  console.log("🔁 Mode switched:", modeDemo ? "DEMO" : "LIVE");
   res.json({ ok: true, demo: modeDemo });
 });
 
 app.get("/api/balance", (req, res) => res.json(balance));
 
-// -------- auto-trade loop --------
+// ---------- Auto-trade loop ----------
 setInterval(() => {
   if (autoTrade && lastScan.length) {
     const pick = lastScan[Math.floor(Math.random() * lastScan.length)];
@@ -148,7 +149,7 @@ setInterval(() => {
         status: "OPEN",
       });
       balance.USDT -= 100;
-      console.log("Auto bought:", pick.symbol);
+      console.log("🤖 Auto bought:", pick.symbol);
     }
   }
 }, 15000);
