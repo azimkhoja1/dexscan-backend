@@ -10,30 +10,12 @@
   "dependencies": {
     "express": "4.19.2",
     "cors": "2.8.5",
-    "axios": "1.6.8"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  }
-  {
-  "name": "dexscan-backend",
-  "version": "3.9.9",
-  "description": "DexScan PRO Backend (Final Render Build)",
-  "type": "module",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "4.19.2",
-    "cors": "2.8.5",
-    "axios": "1.6.8"
+    "axios": "1.6.8",
+    "node-fetch": "2.6.7",
+    "technicalindicators": "3.1.0"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "renderForceBuild": true  // 👈 Add this dummy field
+  "renderForceBuild": true
 }
-
-}
-
