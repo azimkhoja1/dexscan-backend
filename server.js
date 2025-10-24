@@ -1,196 +1,156 @@
-// ============================================
-// DexScan PRO Backend — Final Render Build
-// Bitget + CoinMarketCap + Inline Indicators
-// ============================================
-
+// DexScan PRO Stage 3 Backend
 import express from "express";
 import cors from "cors";
-import axios from "axios";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
+dotenv.config();
 
-// -----------------------------
-// ENV CONFIG (Render reads from Variables tab)
-// -----------------------------
-const PORT = process.env.PORT || 10000;
-const BITGET_BASE = process.env.BITGET_BASE || "https://api.bitget.com";
-const BITGET_DEMO = process.env.BITGET_DEMO === "1";
-const CMC_KEY = process.env.CMC_KEY || "";
-const DEBUG = process.env.DEBUG_LOGS === "1";
-
-// -----------------------------
-// EXPRESS SETUP
-// -----------------------------
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// -----------------------------
-// SIMPLE INDICATORS (no external libs)
-// -----------------------------
-function EMA(values, period) {
-  const k = 2 / (period + 1);
-  let emaArray = [];
-  let ema = values.slice(0, period).reduce((a, b) => a + b) / period;
-  emaArray.push(ema);
-  for (let i = period; i < values.length; i++) {
-    ema = values[i] * k + ema * (1 - k);
-    emaArray.push(ema);
-  }
-  return emaArray;
+const PORT = process.env.PORT || 10000;
+const CMC_KEY = process.env.CMC_KEY || "";
+const DEMO_MODE = process.env.BITGET_DEMO === "1";
+let autoTrade = false;
+let trades = [];
+let balance = { USDT: 10000 };
+let lastScan = [];
+let modeDemo = DEMO_MODE;
+
+// -------- util helpers --------
+async function fetchJSON(url, opts = {}) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error("bad response");
+  return await r.json();
 }
 
-function RSI(values, period = 14) {
-  let gains = 0, losses = 0;
-  for (let i = 1; i <= period; i++) {
-    const diff = values[i] - values[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
-  }
-  let rs = gains / (losses || 1);
-  let rsi = [100 - 100 / (1 + rs)];
-  for (let i = period + 1; i < values.length; i++) {
-    const diff = values[i] - values[i - 1];
-    if (diff >= 0) {
-      gains = (gains * (period - 1) + diff) / period;
-      losses = (losses * (period - 1)) / period;
-    } else {
-      gains = (gains * (period - 1)) / period;
-      losses = (losses * (period - 1) - diff) / period;
-    }
-    rs = gains / (losses || 1);
-    rsi.push(100 - 100 / (1 + rs));
-  }
-  return rsi;
-}
-
-function MACD(values, shortP = 12, longP = 26, signalP = 9) {
-  const shortEma = EMA(values, shortP);
-  const longEma = EMA(values, longP);
-  const macdLine = shortEma.slice(-longEma.length).map((v, i) => v - longEma[i]);
-  const signalLine = EMA(macdLine, signalP);
-  const hist = macdLine.map((v, i) => v - (signalLine[i] || 0));
-  return { macdLine, signalLine, hist };
-}
-
-// -----------------------------
-// API HELPERS
-// -----------------------------
-async function fetchBitgetMarkets() {
+// -------- live price updater --------
+let headerPrices = { btc: null, eth: null, bnb: null };
+async function updateHeaderPrices() {
   try {
-    const res = await axios.get(`${BITGET_BASE}/api/spot/v1/market/tickers`);
-    return res.data.data || [];
-  } catch (e) {
-    if (DEBUG) console.log("Bitget error:", e.message);
-    return [];
-  }
-}
-
-async function fetchCMC(limit = 15) {
-  try {
-    const res = await axios.get(
-      "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-      {
-        headers: { "X-CMC_PRO_API_KEY": CMC_KEY },
-        params: { sort: "percent_change_24h", limit }
-      }
+    const r = await fetchJSON(
+      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,binancecoin&vs_currencies=usd"
     );
-    return res.data.data || [];
+    headerPrices = {
+      btc: r.bitcoin.usd.toFixed(2),
+      eth: r.ethereum.usd.toFixed(2),
+      bnb: r.binancecoin.usd.toFixed(2),
+    };
   } catch (e) {
-    if (DEBUG) console.log("CMC error:", e.message);
-    return [];
+    console.log("coingecko fail");
   }
 }
+setInterval(updateHeaderPrices, 5000);
+updateHeaderPrices();
 
-// -----------------------------
-// MARKET ANALYZER
-// -----------------------------
-async function scanMarkets() {
-  const cmc = await fetchCMC();
-  const bitget = await fetchBitgetMarkets();
-
-  let results = [];
-  for (let coin of cmc) {
-    const symbol = coin.symbol + "USDT";
-    const match = bitget.find((x) => x.symbol === symbol);
-    if (!match) continue;
-
-    const price = parseFloat(match.last || coin.quote.USD.price);
-    const data = Array.from({ length: 60 }, () => price + (Math.random() - 0.5) * price * 0.02);
-    const ema8 = EMA(data, 8).slice(-1)[0];
-    const ema21 = EMA(data, 21).slice(-1)[0];
-    const rsi = RSI(data, 14).slice(-1)[0];
-    const macd = MACD(data);
-    const hist = macd.hist.slice(-1)[0];
-
-    let score = 0;
-    let reasons = [];
-    if (ema8 > ema21) { score += 3; reasons.push("EMA8>EMA21"); }
-    if (hist > 0) { score += 2; reasons.push("MACD+"); }
-    if (rsi > 55 && rsi < 70) { score += 2; reasons.push("RSI bullish"); }
-
-    const entry = price;
-    const tp1 = entry * 1.02;
-    const tp2 = entry * 1.05;
-    const tp3 = entry * 1.10;
-
-    results.push({
-      symbol,
+// -------- fake coin scan --------
+async function runScan() {
+  const symbols = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","DOGEUSDT","XRPUSDT"];
+  lastScan = symbols.map((s) => {
+    const entry = +(Math.random() * 100 + 1).toFixed(5);
+    const tp1 = +(entry * 1.03).toFixed(5);
+    const tp2 = +(entry * 1.06).toFixed(5);
+    const tp3 = +(entry * 1.1).toFixed(5);
+    const score = Math.floor(Math.random() * 10) + 1;
+    return {
+      symbol: s,
       entry,
       tp1,
       tp2,
       tp3,
-      potential: ((tp3 - entry) / entry * 100).toFixed(2) + "%",
+      potential: "10%",
+      hours: Math.floor(Math.random() * 24),
       score,
-      reason: reasons.join(", "),
-      hours: Math.round(Math.random() * 24)
-    });
-  }
-
-  return results.sort((a, b) => b.score - a.score).slice(0, 10);
+    };
+  });
+  return lastScan;
 }
 
-// -----------------------------
-// ROUTES
-// -----------------------------
-app.get("/", (_, res) => res.send("✅ DexScan PRO Backend (Final Render Build)"));
-app.get("/api/header", async (_, res) => {
-  try {
-    const headers = { "X-CMC_PRO_API_KEY": process.env.CMC_KEY };
-    const { data } = await axios.get(
-      "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol=BTC,ETH,BNB",
-      { headers }
-    );
-    res.json({
-      btc: data.data.BTC.quote.USD.price.toFixed(2),
-      eth: data.data.ETH.quote.USD.price.toFixed(2),
-      bnb: data.data.BNB.quote.USD.price.toFixed(2)
-    });
-  } catch (err) {
-    console.error("Header fetch failed:", err.message);
-    res.json({ btc: null, eth: null, bnb: null });
+// -------- trades & pnl simulation --------
+function simulatePrices() {
+  trades.forEach((t) => {
+    if (t.status === "OPEN") {
+      const change = (Math.random() - 0.5) * 0.02; // ±1 %
+      t.latest_price = +(t.entry_price * (1 + change)).toFixed(5);
+    }
+  });
+}
+setInterval(simulatePrices, 5000);
+
+// -------- API endpoints --------
+app.get("/", (req, res) => res.send("DexScan PRO Backend (Stage3) ✅"));
+
+app.get("/api/header", (req, res) => res.json(headerPrices));
+
+app.get("/api/scan/results", async (req, res) => {
+  if (!lastScan.length) await runScan();
+  res.json(lastScan);
+});
+
+app.post("/api/scan/run", async (req, res) => {
+  await runScan();
+  res.json({ ok: true, count: lastScan.length });
+});
+
+app.get("/api/trades", (req, res) => {
+  res.json(trades);
+});
+
+app.post("/api/trade/buy", (req, res) => {
+  const sym = req.body.symbol;
+  const coin = lastScan.find((x) => x.symbol === sym);
+  if (!coin) return res.json({ ok: false });
+  const id = Date.now().toString();
+  trades.push({
+    id,
+    symbol: sym,
+    entry_price: coin.entry,
+    latest_price: coin.entry,
+    status: "OPEN",
+  });
+  balance.USDT -= 100; // mock trade cost
+  res.json({ ok: true });
+});
+
+app.post("/api/trade/sell", (req, res) => {
+  const id = req.body.trade_id;
+  const t = trades.find((x) => x.id === id);
+  if (!t) return res.json({ ok: false });
+  t.status = "CLOSED";
+  const pnl = (t.latest_price - t.entry_price) / t.entry_price;
+  balance.USDT += 100 * (1 + pnl);
+  res.json({ ok: true });
+});
+
+app.post("/api/auto", (req, res) => {
+  autoTrade = !!req.body.enabled;
+  res.json({ ok: true, autoTrade });
+});
+
+app.post("/api/mode", (req, res) => {
+  modeDemo = !!req.body.demo;
+  res.json({ ok: true, demo: modeDemo });
+});
+
+app.get("/api/balance", (req, res) => res.json(balance));
+
+// -------- auto-trade loop --------
+setInterval(() => {
+  if (autoTrade && lastScan.length) {
+    const pick = lastScan[Math.floor(Math.random() * lastScan.length)];
+    if (!trades.some((t) => t.symbol === pick.symbol && t.status === "OPEN")) {
+      trades.push({
+        id: Date.now().toString(),
+        symbol: pick.symbol,
+        entry_price: pick.entry,
+        latest_price: pick.entry,
+        status: "OPEN",
+      });
+      balance.USDT -= 100;
+      console.log("Auto bought:", pick.symbol);
+    }
   }
-});
+}, 15000);
 
-app.get("/api/coins", async (_, res) => {
-  try {
-    const results = await scanMarkets();
-    res.json(results);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get("/api/balance", (_, res) => {
-  res.json({ ok: true, demo: BITGET_DEMO, balance: { USDT: 10000 } });
-});
-
-app.get("/api/trades", (_, res) => {
-  res.json([]);
-});
-
-// -----------------------------
-// START SERVER
-// -----------------------------
-app.listen(PORT, () => {
-  console.log(`🚀 DexScan PRO backend live on port ${PORT}`);
-});
-
+app.listen(PORT, () => console.log(`🚀 DexScan PRO backend live on port ${PORT}`));
