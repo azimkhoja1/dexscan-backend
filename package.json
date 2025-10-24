@@ -1,18 +1,18 @@
 {
   "name": "dexscan-backend",
-  "version": "3.6.2",
-  "description": "DexScan PRO AI Bot Backend",
+  "version": "3.6.3",
+  "description": "DexScan PRO AI Bot Backend (Render Safe Build)",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "cors": "^2.8.5",
-    "axios": "^1.6.8",
-    "technicalindicators": "3.0.3",
-    "node-fetch": "2.6.7"
+    "express": "4.19.2",
+    "cors": "2.8.5",
+    "axios": "1.6.8",
+    "technicalindicators": "3.0.2",
+    "node-fetch": "2.6.1"
   },
   "engines": {
     "node": ">=18.0.0"
