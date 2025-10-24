@@ -1,6 +1,7 @@
 {
   "name": "dexscan-backend",
-  "version": "3.6.0",
+  "version": "3.6.1",
+  "description": "DexScan PRO AI Bot Backend",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -9,8 +10,11 @@
   "dependencies": {
     "express": "^4.19.2",
     "cors": "^2.8.5",
-    "node-fetch": "^3.3.2",
+    "axios": "^1.6.8",
     "technicalindicators": "^3.1.1",
-    "axios": "^1.6.8"
+    "node-fetch": "2.6.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
