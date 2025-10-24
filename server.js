@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
+import fetch from "node-fetch";   // keep this line same (now using v2.6.7)
 import { getBitgetTicker, getTopMarkets } from "./bitget.js";
 import { RSI, MACD, EMA } from "technicalindicators";
 
@@ -138,3 +138,4 @@ app.post("/api/mode", (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 DexScan PRO backend running on port ${PORT}`);
 });
+
