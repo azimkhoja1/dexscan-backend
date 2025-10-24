@@ -154,14 +154,19 @@ async function scanMarkets() {
 app.get("/", (_, res) => res.send("✅ DexScan PRO Backend (Final Render Build)"));
 app.get("/api/header", async (_, res) => {
   try {
-    const data = await fetchBitgetMarkets();
+    const headers = { "X-CMC_PRO_API_KEY": process.env.CMC_KEY };
+    const { data } = await axios.get(
+      "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol=BTC,ETH,BNB",
+      { headers }
+    );
     res.json({
-      btc: data.find(x => x.symbol === "BTCUSDT")?.last || null,
-      eth: data.find(x => x.symbol === "ETHUSDT")?.last || null,
-      bnb: data.find(x => x.symbol === "BNBUSDT")?.last || null
+      btc: data.data.BTC.quote.USD.price.toFixed(2),
+      eth: data.data.ETH.quote.USD.price.toFixed(2),
+      bnb: data.data.BNB.quote.USD.price.toFixed(2)
     });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+  } catch (err) {
+    console.error("Header fetch failed:", err.message);
+    res.json({ btc: null, eth: null, bnb: null });
   }
 });
 
@@ -188,3 +193,4 @@ app.get("/api/trades", (_, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 DexScan PRO backend live on port ${PORT}`);
 });
+
