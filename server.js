@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
 import { getBitgetTicker, getTopMarkets } from "./bitget.js";
-import { RSI, MACD, EMA } from "technicalindicators";
+import { rsi, macd, ema } from "trading-indicator";
 
 
 const app = express();
@@ -139,5 +139,6 @@ app.post("/api/mode", (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 DexScan PRO backend running on port ${PORT}`);
 });
+
 
 
